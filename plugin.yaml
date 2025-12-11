@@ -1,0 +1,1107 @@
+name: Jira
+version: 1.0.0
+description: |-
+  A plugin for creating Jira issues after Terraform/OpenTofu plans when cost exceeds a threshold..
+
+  This plugin automatically creates a Jira issue containing details about
+  infrastructure changes after each plan phase, making it easy to track
+  and review changes in your project management workflow.
+author: Spacelift Team
+labels:
+- project management
+- tracking
+- jira
+parameters:
+- name: Jira URL
+  description: The base URL of your Jira instance (e.g., https://yourcompany.atlassian.net)
+  type: string
+  sensitive: false
+  required: true
+  id: jira_url
+- name: Jira Email
+  description: The email address associated with your Jira account
+  type: string
+  sensitive: false
+  required: true
+  id: jira_email
+- name: Jira API Token
+  description: API token for Jira authentication (create at https://id.atlassian.com/manage-profile/security/api-tokens)
+  type: string
+  sensitive: true
+  required: true
+  id: jira_api_token
+- name: Jira Project Key
+  description: The project key where issues will be created (e.g., INFRA, OPS)
+  type: string
+  sensitive: false
+  required: true
+  id: jira_project_key
+- name: Jira Issue Type
+  description: The type of issue to create (e.g., Task, Story, Bug)
+  type: string
+  sensitive: false
+  required: false
+  default: Task
+  id: jira_issue_type
+- name: Jira Assignee
+  description: Account ID of the user to assign the issue to (optional). Leave empty for unassigned.
+  type: string
+  sensitive: false
+  required: false
+  default: ''
+  id: jira_assignee
+- name: Jira Labels
+  description: Comma-separated list of labels to add to the issue (e.g., opentofu,infrastructure)
+  type: string
+  sensitive: false
+  required: false
+  default: ''
+  id: jira_labels
+- name: Jira Issue Initial Status
+  description: Initial status of the issue (e.g., Open, In Progress, Resolved)
+  type: string
+  sensitive: false
+  required: false
+  default: DEFAULT
+  id: jira_initial_status
+- name: Jira Custom Field ID
+  description: The ID of the custom field to use to save spacelift stack info into.
+  type: string
+  sensitive: false
+  required: true
+  id: custom_field_id
+- name: Infracost API Key
+  description: The API key for Infracost authentication
+  type: string
+  sensitive: true
+  required: true
+  id: infracost_api_key
+- name: Signing Key
+  description: The base64 encoded private key used to sign the JWT token
+  type: string
+  sensitive: true
+  required: true
+  id: signing_key
+- name: Infracost Threshold
+  description: The threshold for Infracost cost estimates (optional). Leave empty for no threshold.
+  type: number
+  sensitive: false
+  required: false
+  default: 0
+  id: infracost_threshold
+contexts:
+- name_prefix: JIRA
+  description: Jira Plugin for creating issues after plan
+  env:
+  - key: JIRA_URL
+    value_from_parameter: jira_url
+    sensitive: false
+  - key: JIRA_EMAIL
+    value_from_parameter: jira_email
+    sensitive: false
+  - key: JIRA_API_TOKEN
+    value_from_parameter: jira_api_token
+    sensitive: true
+  - key: JIRA_PROJECT_KEY
+    value_from_parameter: jira_project_key
+    sensitive: false
+  - key: JIRA_ISSUE_TYPE
+    value_from_parameter: jira_issue_type
+    sensitive: false
+  - key: JIRA_ASSIGNEE
+    value_from_parameter: jira_assignee
+    sensitive: false
+  - key: JIRA_LABELS
+    value_from_parameter: jira_labels
+    sensitive: false
+  - key: JIRA_ISSUE_INITIAL_STATUS
+    value_from_parameter: jira_initial_status
+    sensitive: false
+  - key: INFRACOST_API_KEY
+    value_from_parameter: infracost_api_key
+    sensitive: true
+  - key: CUSTOM_FIELD_ID
+    value_from_parameter: custom_field_id
+    sensitive: false
+  - key: SIGNING_KEY
+    value_from_parameter: signing_key
+    sensitive: true
+  - key: INFRACOST_THRESHOLD
+    value_from_parameter: infracost_threshold
+    sensitive: false
+  mounted_files:
+  - path: /mnt/workspace/plugins/jira/plugin.py
+    content: |-
+      import base64
+      import json
+      import os
+      import urllib.request
+      import hashlib
+      import hmac
+      from typing import Any, Dict, Optional
+      from urllib.error import HTTPError
+
+      from spaceforge import Context, Parameter, SpaceforgePlugin, Variable, Policy
+
+
+      class JiraPlugin(SpaceforgePlugin):
+          """
+          A plugin for creating Jira issues after Terraform/OpenTofu plans when cost exceeds a threshold..
+
+          This plugin automatically creates a Jira issue containing details about
+          infrastructure changes after each plan phase, making it easy to track
+          and review changes in your project management workflow.
+          """
+
+          # Plugin metadata
+          __plugin_name__ = "Jira"
+          __labels__ = ["project management", "tracking", "jira"]
+          __version__ = "1.0.0"
+          __author__ = "Spacelift Team"
+
+          # Plugin parameters
+          __parameters__ = [
+              Parameter(
+                  name="Jira URL",
+                  id="jira_url",
+                  description="The base URL of your Jira instance (e.g., https://yourcompany.atlassian.net)",
+                  type="string",
+                  required=True,
+                  sensitive=False,
+              ),
+              Parameter(
+                  name="Jira Email",
+                  id="jira_email",
+                  description="The email address associated with your Jira account",
+                  type="string",
+                  required=True,
+                  sensitive=False,
+              ),
+              Parameter(
+                  name="Jira API Token",
+                  id="jira_api_token",
+                  description="API token for Jira authentication (create at https://id.atlassian.com/manage-profile/security/api-tokens)",
+                  type="string",
+                  required=True,
+                  sensitive=True,
+              ),
+              Parameter(
+                  name="Jira Project Key",
+                  id="jira_project_key",
+                  description="The project key where issues will be created (e.g., INFRA, OPS)",
+                  type="string",
+                  required=True,
+                  sensitive=False,
+              ),
+              Parameter(
+                  name="Jira Issue Type",
+                  id="jira_issue_type",
+                  description="The type of issue to create (e.g., Task, Story, Bug)",
+                  type="string",
+                  required=False,
+                  default="Task",
+                  sensitive=False,
+              ),
+              Parameter(
+                  name="Jira Assignee",
+                  id="jira_assignee",
+                  description="Account ID of the user to assign the issue to (optional). Leave empty for unassigned.",
+                  type="string",
+                  required=False,
+                  default="",
+                  sensitive=False,
+              ),
+              Parameter(
+                  name="Jira Labels",
+                  id="jira_labels",
+                  description="Comma-separated list of labels to add to the issue (e.g., opentofu,infrastructure)",
+                  type="string",
+                  required=False,
+                  default="",
+                  sensitive=False,
+              ),
+              Parameter(
+                  name="Jira Issue Initial Status",
+                  id="jira_initial_status",
+                  description="Initial status of the issue (e.g., Open, In Progress, Resolved)",
+                  type="string",
+                  required=False,
+                  default="DEFAULT",
+              ),
+              Parameter(
+                  name="Jira Custom Field ID",
+                  id="custom_field_id",
+                  description="The ID of the custom field to use to save spacelift stack info into.",
+                  type="string",
+                  required=True,
+              ),
+              Parameter(
+                  name="Infracost API Key",
+                  id="infracost_api_key",
+                  description="The API key for Infracost authentication",
+                  type="string",
+                  required=True,
+                  sensitive=True,
+              ),
+              Parameter(
+                  name="Signing Key",
+                  id="signing_key",
+                  description="The base64 encoded private key used to sign the JWT token",
+                  type="string",
+                  required=True,
+                  sensitive=True,
+              ),
+              Parameter(
+                  name="Infracost Threshold",
+                  id="infracost_threshold",
+                  description="The threshold for Infracost cost estimates (optional). Leave empty for no threshold.",
+                  type="number",
+                  required=False,
+                  default=0,
+              ),
+          ]
+
+          # Plugin contexts
+          __contexts__ = [
+              Context(
+                  name_prefix="JIRA",
+                  description="Jira Plugin for creating issues after plan",
+                  hooks={
+                      "after_plan": [
+                          "[ ! -f spacelift.plan.json ] && { if command -v tofu >/dev/null 2>&1; then tofu show -json spacelift.plan > spacelift.plan.json; elif command -v terraform >/dev/null 2>&1; then terraform show -json spacelift.plan > spacelift.plan.json; else echo 'Error: Neither tofu nor terraform found in PATH' >&2; exit 1; fi; }",
+                          "[ ! -f infracost.custom.spacelift.json ] && infracost breakdown --path . --out-file infracost.custom.spacelift.json --format json",
+                      ]
+                  },
+                  env=[
+                      Variable(
+                          key="JIRA_URL",
+                          value_from_parameter="jira_url",
+                          sensitive=False,
+                      ),
+                      Variable(
+                          key="JIRA_EMAIL",
+                          value_from_parameter="jira_email",
+                          sensitive=False,
+                      ),
+                      Variable(
+                          key="JIRA_API_TOKEN",
+                          value_from_parameter="jira_api_token",
+                          sensitive=True,
+                      ),
+                      Variable(
+                          key="JIRA_PROJECT_KEY",
+                          value_from_parameter="jira_project_key",
+                          sensitive=False,
+                      ),
+                      Variable(
+                          key="JIRA_ISSUE_TYPE",
+                          value_from_parameter="jira_issue_type",
+                          sensitive=False,
+                      ),
+                      Variable(
+                          key="JIRA_ASSIGNEE",
+                          value_from_parameter="jira_assignee",
+                          sensitive=False,
+                      ),
+                      Variable(
+                          key="JIRA_LABELS",
+                          value_from_parameter="jira_labels",
+                          sensitive=False,
+                      ),
+                      Variable(
+                          key="JIRA_ISSUE_INITIAL_STATUS",
+                          value_from_parameter="jira_initial_status",
+                          sensitive=False,
+                      ),
+                      Variable(
+                          key="INFRACOST_API_KEY",
+                          value_from_parameter="infracost_api_key",
+                          sensitive=True,
+                      ),
+                      Variable(
+                          key="CUSTOM_FIELD_ID",
+                          value_from_parameter="custom_field_id",
+                          sensitive=False,
+                      ),
+                      Variable(
+                          key="SIGNING_KEY",
+                          value_from_parameter="signing_key",
+                          sensitive=True,
+                      ),
+                      Variable(
+                          key="INFRACOST_THRESHOLD",
+                          value_from_parameter="infracost_threshold",
+                          sensitive=False,
+                      ),
+                  ],
+              )
+          ]
+
+          def __init__(self):
+              super().__init__()
+              self.jira_url = os.environ.get("JIRA_URL", "").rstrip("/")
+              self.jira_email = os.environ.get("JIRA_EMAIL", "")
+              self.jira_api_token = os.environ.get("JIRA_API_TOKEN", "")
+              self.jira_project_key = os.environ.get("JIRA_PROJECT_KEY", "")
+              self.jira_issue_type = os.environ.get("JIRA_ISSUE_TYPE", "Task")
+              self.jira_assignee = os.environ.get("JIRA_ASSIGNEE", "")
+              self.jira_labels = os.environ.get("JIRA_LABELS", "")
+              self.jira_custom_field_id = os.environ.get("CUSTOM_FIELD_ID", "")
+              self.jira_initial_status = os.environ.get(
+                  "JIRA_ISSUE_INITIAL_STATUS", "DEFAULT"
+              )
+              self.signing_key = os.environ.get("SIGNING_KEY", "")
+              self.infracost_threshold = float(os.environ.get("INFRACOST_THRESHOLD", "0"))
+
+              # Get Spacelift context
+              self.stack_name = os.environ.get("TF_VAR_spacelift_stack_id", "Unknown Stack")
+              self.run_id = os.environ.get("TF_VAR_spacelift_run_id", "local")
+
+          def after_plan(self) -> None:
+              """Create a Jira issue after the plan phase."""
+              self.logger.debug("Starting Jira plugin after_plan hook")
+
+              # Get plan data
+              plan_data = self.get_plan_json()
+              if not plan_data:
+                  self.logger.error("Could not load plan JSON")
+                  exit(1)
+
+              # Summarize the plan
+              plan_summary = self._summarize_plan(plan_data)
+              total_changes = sum(
+                  [
+                      plan_summary["resource_changes"]["create"],
+                      plan_summary["resource_changes"]["update"],
+                      plan_summary["resource_changes"]["delete"],
+                      plan_summary["resource_changes"]["replace"],
+                  ]
+              )
+
+              self.logger.info(
+                  f"Plan summary: {total_changes} total changes "
+                  f"({plan_summary['resource_changes']['create']} create, "
+                  f"{plan_summary['resource_changes']['update']} update, "
+                  f"{plan_summary['resource_changes']['delete']} delete, "
+                  f"{plan_summary['resource_changes']['replace']} replace)"
+              )
+
+              infracost_data = self._get_infracost_data()
+              if not infracost_data:
+                  self.logger.error("Failed to read Infracost output file, exiting")
+                  exit(1)
+
+              if not infracost_data.get("projects") or len(infracost_data["projects"]) == 0:
+                  self.logger.error("No projects found in Infracost data, exiting")
+                  exit(1)
+
+              # Check if monthly cost meets threshold
+              try:
+                  monthly_cost = float(
+                      infracost_data["projects"][0]["breakdown"]["totalMonthlyCost"]
+                  )
+              except (KeyError, ValueError, TypeError) as e:
+                  self.logger.error(f"Failed to parse monthly cost from Infracost data: {e}")
+                  exit(1)
+
+              self.logger.debug(
+                  f"Monthly cost: $${monthly_cost}, Threshold: $${self.infracost_threshold}"
+              )
+
+              if monthly_cost <= self.infracost_threshold:
+                  self.logger.info(
+                      f"Monthly cost $${monthly_cost} is below threshold $${self.infracost_threshold}, skipping Jira issue creation"
+                  )
+                  return
+
+              # Create Jira issue
+              issue_response = self._create_jira_issue(plan_summary, infracost_data)
+              if not issue_response:
+                  self.logger.error("Failed to create Jira issue")
+                  exit(1)
+
+              issue_key = issue_response.get("key")
+              issue_url = f"{self.jira_url}/browse/{issue_key}"
+
+              # Send markdown to Spacelift
+              changes = plan_summary["resource_changes"]
+              markdown = f"""# Jira Issue Created
+
+      **Issue:** [{issue_key}]({issue_url})
+
+      ## Plan Summary
+      - ✅ **Create:** {changes['create']} resource(s)
+      - 🔄 **Update:** {changes['update']} resource(s)
+      - ❌ **Delete:** {changes['delete']} resource(s)
+      - 🔁 **Replace:** {changes['replace']} resource(s)
+
+      [View issue in Jira →]({issue_url})
+      """
+
+              self.send_markdown(markdown)
+              self.logger.debug(f"Jira plugin completed successfully. Issue URL: {issue_url}")
+
+          def _base64url_encode(self, data):
+              """Base64 URL-safe encode without padding"""
+              return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+          def _create_jwt(self, payload, secret):
+              # Header
+              header = {"alg": "HS256", "typ": "JWT"}
+
+              # Encode header and payload
+              header_encoded = self._base64url_encode(json.dumps(header).encode("utf-8"))
+              payload_encoded = self._base64url_encode(json.dumps(payload).encode("utf-8"))
+
+              # Create signature
+              message = f"{header_encoded}.{payload_encoded}"
+              signature = hmac.new(
+                  secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256
+              ).digest()
+              signature_encoded = self._base64url_encode(signature)
+
+              # Combine all parts
+              jwt = f"{header_encoded}.{payload_encoded}.{signature_encoded}"
+              return jwt
+
+          def _get_auth_header(self) -> str:
+              """Generate the Basic Auth header for Jira API."""
+              credentials = f"{self.jira_email}:{self.jira_api_token}"
+              encoded = base64.b64encode(credentials.encode()).decode()
+              return f"Basic {encoded}"
+
+          def _get_infracost_data(self) -> Optional[Dict[str, Any]]:
+              """Read and parse Infracost output if available."""
+              infracost_file = f"{self._workspace_root}/infracost.custom.spacelift.json"
+              if not os.path.exists(infracost_file):
+                  self.logger.warning(f"Infracost file not found at {infracost_file}")
+                  return None
+
+              try:
+                  with open(infracost_file) as f:
+                      data = json.load(f)
+                      return data
+              except Exception as e:
+                  self.logger.error(f"Failed to read Infracost data: {e}")
+                  return None
+
+          def _build_adf_description(
+              self,
+              plan_summary: Dict[str, Any],
+              infracost_data: Optional[Dict[str, Any]] = None,
+          ) -> Dict[str, Any]:
+              """Build an Atlassian Document Format (ADF) description for Jira."""
+              changes = plan_summary["resource_changes"]
+              total_changes = (
+                  changes["create"]
+                  + changes["update"]
+                  + changes["delete"]
+                  + changes["replace"]
+              )
+
+              # Start building ADF content
+              content = []
+
+              # Heading: Terraform Plan Summary
+              content.append(
+                  {
+                      "type": "heading",
+                      "attrs": {"level": 2},
+                      "content": [{"type": "text", "text": "Terraform Plan Summary"}],
+                  }
+              )
+
+              # Stack and Run ID info
+              content.append(
+                  {
+                      "type": "paragraph",
+                      "content": [
+                          {"type": "text", "text": "Stack: ", "marks": [{"type": "strong"}]},
+                          {"type": "text", "text": self.stack_name},
+                      ],
+                  }
+              )
+              content.append(
+                  {
+                      "type": "paragraph",
+                      "content": [
+                          {"type": "text", "text": "Run ID: ", "marks": [{"type": "strong"}]},
+                          {"type": "text", "text": self.run_id},
+                      ],
+                  }
+              )
+
+              # Changes Overview heading
+              content.append(
+                  {
+                      "type": "heading",
+                      "attrs": {"level": 3},
+                      "content": [{"type": "text", "text": "Changes Overview"}],
+                  }
+              )
+
+              # Bullet list with changes
+              bullet_items = []
+              bullet_items.append(
+                  {
+                      "type": "listItem",
+                      "content": [
+                          {
+                              "type": "paragraph",
+                              "content": [
+                                  {
+                                      "type": "text",
+                                      "text": "✓ Create: ",
+                                      "marks": [{"type": "strong"}],
+                                  },
+                                  {
+                                      "type": "text",
+                                      "text": f"{changes['create']} resource(s)",
+                                  },
+                              ],
+                          }
+                      ],
+                  }
+              )
+              bullet_items.append(
+                  {
+                      "type": "listItem",
+                      "content": [
+                          {
+                              "type": "paragraph",
+                              "content": [
+                                  {
+                                      "type": "text",
+                                      "text": "↻ Update: ",
+                                      "marks": [{"type": "strong"}],
+                                  },
+                                  {
+                                      "type": "text",
+                                      "text": f"{changes['update']} resource(s)",
+                                  },
+                              ],
+                          }
+                      ],
+                  }
+              )
+              bullet_items.append(
+                  {
+                      "type": "listItem",
+                      "content": [
+                          {
+                              "type": "paragraph",
+                              "content": [
+                                  {
+                                      "type": "text",
+                                      "text": "✗ Delete: ",
+                                      "marks": [{"type": "strong"}],
+                                  },
+                                  {
+                                      "type": "text",
+                                      "text": f"{changes['delete']} resource(s)",
+                                  },
+                              ],
+                          }
+                      ],
+                  }
+              )
+              bullet_items.append(
+                  {
+                      "type": "listItem",
+                      "content": [
+                          {
+                              "type": "paragraph",
+                              "content": [
+                                  {
+                                      "type": "text",
+                                      "text": "⟳ Replace: ",
+                                      "marks": [{"type": "strong"}],
+                                  },
+                                  {
+                                      "type": "text",
+                                      "text": f"{changes['replace']} resource(s)",
+                                  },
+                              ],
+                          }
+                      ],
+                  }
+              )
+
+              content.append({"type": "bulletList", "content": bullet_items})
+
+              # Add Infracost cost estimates if available
+              if (
+                  infracost_data
+                  and "projects" in infracost_data
+                  and len(infracost_data["projects"]) > 0
+              ):
+                  project = infracost_data["projects"][0]
+
+                  if "breakdown" in project and "totalMonthlyCost" in project["breakdown"]:
+                      content.append(
+                          {
+                              "type": "heading",
+                              "attrs": {"level": 3},
+                              "content": [{"type": "text", "text": "Cost Estimate"}],
+                          }
+                      )
+
+                      total_monthly_cost = float(project["breakdown"]["totalMonthlyCost"])
+
+                      # Get previous cost if available
+                      cost_change = None
+                      if (
+                          "pastBreakdown" in project
+                          and "totalMonthlyCost" in project["pastBreakdown"]
+                      ):
+                          past_cost = float(project["pastBreakdown"]["totalMonthlyCost"])
+                          cost_change = total_monthly_cost - past_cost
+
+                          if past_cost > 0:
+                              cost_change_percent = (cost_change / past_cost) * 100
+                          else:
+                              cost_change_percent = 0
+
+                      # Monthly cost
+                      cost_items = []
+                      cost_items.append(
+                          {
+                              "type": "listItem",
+                              "content": [
+                                  {
+                                      "type": "paragraph",
+                                      "content": [
+                                          {
+                                              "type": "text",
+                                              "text": "Monthly Cost: ",
+                                              "marks": [{"type": "strong"}],
+                                          },
+                                          {
+                                              "type": "text",
+                                              "text": f"$${total_monthly_cost:.2f}",
+                                          },
+                                      ],
+                                  }
+                              ],
+                          }
+                      )
+
+                      # Cost change if available
+                      if cost_change is not None:
+                          change_symbol = "+" if cost_change >= 0 else ""
+                          cost_items.append(
+                              {
+                                  "type": "listItem",
+                                  "content": [
+                                      {
+                                          "type": "paragraph",
+                                          "content": [
+                                              {
+                                                  "type": "text",
+                                                  "text": "Cost Change: ",
+                                                  "marks": [{"type": "strong"}],
+                                              },
+                                              {
+                                                  "type": "text",
+                                                  "text": f"{change_symbol}$${cost_change:.2f} ({change_symbol}{cost_change_percent:.1f}%)",
+                                              },
+                                          ],
+                                      }
+                                  ],
+                              }
+                          )
+
+                      content.append({"type": "bulletList", "content": cost_items})
+
+              # Add resource details if there are changes
+              if total_changes > 0 and plan_summary["resources"]:
+                  content.append(
+                      {
+                          "type": "heading",
+                          "attrs": {"level": 3},
+                          "content": [{"type": "text", "text": "Resource Changes"}],
+                      }
+                  )
+
+                  # Group resources by action
+                  for action_type in ["create", "update", "delete", "replace"]:
+                      resources_of_type = [
+                          r for r in plan_summary["resources"] if r["action"] == action_type
+                      ]
+                      if resources_of_type:
+                          # Action type heading
+                          content.append(
+                              {
+                                  "type": "paragraph",
+                                  "content": [
+                                      {
+                                          "type": "text",
+                                          "text": f"{action_type.upper()}:",
+                                          "marks": [{"type": "strong"}],
+                                      }
+                                  ],
+                              }
+                          )
+
+                          # Resource list
+                          resource_items = []
+                          for resource in resources_of_type[:20]:  # Limit to first 20
+                              resource_items.append(
+                                  {
+                                      "type": "listItem",
+                                      "content": [
+                                          {
+                                              "type": "paragraph",
+                                              "content": [
+                                                  {
+                                                      "type": "text",
+                                                      "text": resource["address"],
+                                                      "marks": [{"type": "code"}],
+                                                  }
+                                              ],
+                                          }
+                                      ],
+                                  }
+                              )
+
+                          if len(resources_of_type) > 20:
+                              resource_items.append(
+                                  {
+                                      "type": "listItem",
+                                      "content": [
+                                          {
+                                              "type": "paragraph",
+                                              "content": [
+                                                  {
+                                                      "type": "text",
+                                                      "text": f"...and {len(resources_of_type) - 20} more",
+                                                      "marks": [{"type": "em"}],
+                                                  }
+                                              ],
+                                          }
+                                      ],
+                                  }
+                              )
+
+                          content.append({"type": "bulletList", "content": resource_items})
+
+              # Add Spacelift link if available
+              if self.spacelift_domain:
+                  run_url = (
+                      f"{self.spacelift_domain}/stack/{self.stack_name}/run/{self.run_id}"
+                  )
+                  content.append(
+                      {
+                          "type": "paragraph",
+                          "content": [
+                              {
+                                  "type": "text",
+                                  "text": "View run in Spacelift",
+                                  "marks": [{"type": "link", "attrs": {"href": run_url}}],
+                              }
+                          ],
+                      }
+                  )
+
+              # Return the complete ADF document
+              return {"version": 1, "type": "doc", "content": content}
+
+          def _summarize_plan(self, plan_data: Dict[str, Any]) -> Dict[str, Any]:
+              """Extract key information from the plan JSON."""
+              summary = {
+                  "resource_changes": {
+                      "create": 0,
+                      "update": 0,
+                      "delete": 0,
+                      "replace": 0,
+                      "no-op": 0,
+                  },
+                  "resources": [],
+              }
+
+              if "resource_changes" in plan_data:
+                  for change in plan_data["resource_changes"]:
+                      actions = change.get("change", {}).get("actions", [])
+                      resource_type = change.get("type", "unknown")
+                      resource_name = change.get("name", "unknown")
+                      resource_address = change.get("address", "unknown")
+
+                      # Categorize the change
+                      if "create" in actions:
+                          if "delete" in actions:
+                              summary["resource_changes"]["replace"] += 1
+                              action = "replace"
+                          else:
+                              summary["resource_changes"]["create"] += 1
+                              action = "create"
+                      elif "delete" in actions:
+                          summary["resource_changes"]["delete"] += 1
+                          action = "delete"
+                      elif "update" in actions:
+                          summary["resource_changes"]["update"] += 1
+                          action = "update"
+                      else:
+                          summary["resource_changes"]["no-op"] += 1
+                          action = "no-op"
+
+                      summary["resources"].append(
+                          {
+                              "action": action,
+                              "type": resource_type,
+                              "name": resource_name,
+                              "address": resource_address,
+                          }
+                      )
+
+              return summary
+
+          def _update_jira_issue(self, issue_key: str, custom_field_value: str) -> bool:
+              """Update a Jira issue's custom field."""
+              api_url = f"{self.jira_url}/rest/api/3/issue/{issue_key}"
+              headers = {
+                  "Authorization": self._get_auth_header(),
+                  "Content-Type": "application/json",
+                  "Accept": "application/json",
+              }
+
+              payload = {"fields": {self.jira_custom_field_id: custom_field_value}}
+
+              self.logger.debug(f"Updating Jira issue {issue_key} at {api_url}")
+
+              try:
+                  req = urllib.request.Request(
+                      api_url,
+                      data=json.dumps(payload).encode("utf-8"),
+                      headers=headers,
+                      method="PUT",
+                  )
+
+                  with urllib.request.urlopen(req) as response:
+                      self.logger.debug(f"Successfully updated Jira issue {issue_key}")
+                      return True
+
+              except HTTPError as e:
+                  error_body = e.read().decode("utf-8") if hasattr(e, "read") else ""
+                  self.logger.error(f"Failed to update Jira issue: {e.code} {e.reason}")
+                  self.logger.error(f"Error details: {error_body}")
+                  return False
+              except Exception as e:
+                  self.logger.error(f"Unexpected error updating Jira issue: {str(e)}")
+                  return False
+
+          def _create_jira_issue(
+              self,
+              plan_summary: Dict[str, Any],
+              infracost_data: Optional[Dict[str, Any]] = None,
+          ) -> Optional[Dict[str, Any]]:
+              """Create a Jira issue with plan details."""
+              if not all(
+                  [self.jira_url, self.jira_email, self.jira_api_token, self.jira_project_key]
+              ):
+                  self.logger.error("Missing required Jira configuration")
+                  return None
+
+              # Calculate total changes for summary
+              changes = plan_summary["resource_changes"]
+              total_changes = (
+                  changes["create"]
+                  + changes["update"]
+                  + changes["delete"]
+                  + changes["replace"]
+              )
+
+              # Build issue description in ADF format
+              description_adf = self._build_adf_description(plan_summary, infracost_data)
+
+              # Build issue payload
+              issue_fields: Dict[str, Any] = {
+                  "project": {"key": self.jira_project_key},
+                  "summary": f"[Terraform Plan] {self.stack_name} - {total_changes} change(s)",
+                  "description": description_adf,
+                  "issuetype": {"name": self.jira_issue_type},
+              }
+
+              # Add optional fields
+              if self.jira_assignee:
+                  issue_fields["assignee"] = {"accountId": self.jira_assignee}
+
+              if self.jira_labels:
+                  labels = [label.strip() for label in self.jira_labels.split(",")]
+                  # Add TF and spacelift labels by default
+                  labels.extend(["TF", "spacelift"])
+                  issue_fields["labels"] = list(set(labels))  # Remove duplicates
+
+              if self.jira_initial_status != "DEFAULT":
+                  issue_fields["status"] = {"name": self.jira_initial_status}
+
+              payload = {"fields": issue_fields}
+
+              # Make API request
+              api_url = f"{self.jira_url}/rest/api/3/issue"
+              headers = {
+                  "Authorization": self._get_auth_header(),
+                  "Content-Type": "application/json",
+                  "Accept": "application/json",
+              }
+
+              self.logger.debug(f"Creating Jira issue at {api_url}")
+              self.logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
+
+              try:
+                  req = urllib.request.Request(
+                      api_url,
+                      data=json.dumps(payload).encode("utf-8"),
+                      headers=headers,
+                      method="POST",
+                  )
+
+                  with urllib.request.urlopen(req) as response:
+                      response_data = json.loads(response.read().decode("utf-8"))
+                      issue_key = response_data.get("key")
+                      issue_id = response_data.get("id")
+                      self.logger.debug(
+                          f"Successfully created Jira issue: {issue_key} (ID: {issue_id})"
+                      )
+
+                      # Now create JWT with issue ID included and update the issue
+                      jwt_payload = {
+                          "stack_id": self.stack_name,
+                          "run_id": self.run_id,
+                          "issue_id": issue_id,
+                      }
+                      jwt_token = self._create_jwt(jwt_payload, self.signing_key)
+
+                      # Update the issue with the JWT
+                      if not self._update_jira_issue(issue_key, jwt_token):
+                          self.logger.error(
+                              "Failed to update issue with JWT, but issue was created"
+                          )
+                          # Still return the response since the issue was created successfully
+
+                      return response_data
+
+              except HTTPError as e:
+                  error_body = e.read().decode("utf-8") if hasattr(e, "read") else ""
+                  self.logger.error(f"Failed to create Jira issue: {e.code} {e.reason}")
+                  self.logger.error(f"Error details: {error_body}")
+                  exit(1)
+              except Exception as e:
+                  self.logger.error(f"Unexpected error creating Jira issue: {str(e)}")
+                  exit(1)
+
+          __policies__ = [
+              Policy(
+                  name_prefix="INFRACOST",
+                  type="PLAN",
+                  body="""
+      package spacelift
+
+      # Prevent any changes that will cause the monthly cost to go above a certain threshold
+      warn[sprintf("monthly cost greater than $%d ($%d)", [threshold, monthly_cost])] {
+      	threshold := ${threshold}
+      	monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+      	monthly_cost > threshold
+      }
+
+      flag["infracost:too_costly"]{
+      	threshold := ${threshold}
+      	monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+      	monthly_cost > threshold
+      }
+
+      sample := true
+      """,
+              ),
+              Policy(
+                  name_prefix="INFRAFOST_APPROVAL",
+                  type="APPROVAL",
+                  body="""
+      package spacelift
+
+      approve { input.run.state != "UNCONFIRMED" }
+
+      approve {
+        count(input.reviews.current.approvals) > 0
+        count(input.reviews.current.rejections) == 0
+        input.reviews.current.approvals[_].author == "api::${api_key_id}"
+      }
+
+      approve {
+          input.run.flags[_] != "infracost:too_costly"
+      }
+
+      sample := true
+      """,
+              ),
+          ]
+    sensitive: false
+  - path: /mnt/workspace/plugins/jira/after_plan.sh
+    content: |-
+      #!/bin/sh
+
+      set -e
+
+      cd /mnt/workspace/plugins/jira
+
+      if [ ! -d "./venv" ]; then
+          python -m venv --system-site-packages ./venv
+      fi
+      . venv/bin/activate
+
+      if ! command -v spaceforge; then
+          pip install spaceforge
+      fi
+
+      if [ -f requirements.txt ] && [ ! -f .spaceforge_installed_requirements ]; then
+          pip install -r requirements.txt
+          touch .spaceforge_installed_requirements
+      fi
+
+      cd /mnt/workspace/source/$TF_VAR_spacelift_project_root
+      python -m spaceforge run --plugin-file /mnt/workspace/plugins/jira/plugin.py after_plan
+    sensitive: false
+  hooks:
+    after_plan:
+    - '[ ! -f spacelift.plan.json ] && { if command -v tofu >/dev/null 2>&1; then tofu show -json spacelift.plan > spacelift.plan.json; elif command -v terraform >/dev/null 2>&1; then terraform show -json spacelift.plan > spacelift.plan.json; else echo ''Error: Neither tofu nor terraform found in PATH'' >&2; exit 1; fi; }'
+    - '[ ! -f infracost.custom.spacelift.json ] && infracost breakdown --path . --out-file infracost.custom.spacelift.json --format json'
+    - chmod +x /mnt/workspace/plugins/jira/after_plan.sh && /mnt/workspace/plugins/jira/after_plan.sh
+    before_init:
+    - mkdir -p /mnt/workspace/plugins/jira
+policies:
+- name_prefix: INFRACOST
+  type: PLAN
+  body: |-
+    package spacelift
+
+    # Prevent any changes that will cause the monthly cost to go above a certain threshold
+    warn[sprintf("monthly cost greater than $%d ($%d)", [threshold, monthly_cost])] {
+    	threshold := ${threshold}
+    	monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+    	monthly_cost > threshold
+    }
+
+    flag["infracost:too_costly"]{
+    	threshold := ${threshold}
+    	monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+    	monthly_cost > threshold
+    }
+
+    sample := true
+- name_prefix: INFRAFOST_APPROVAL
+  type: APPROVAL
+  body: |-
+    package spacelift
+
+    approve { input.run.state != "UNCONFIRMED" }
+
+    approve {
+      count(input.reviews.current.approvals) > 0
+      count(input.reviews.current.rejections) == 0
+      input.reviews.current.approvals[_].author == "api::${api_key_id}"
+    }
+
+    approve {
+        input.run.flags[_] != "infracost:too_costly"
+    }
+
+    sample := true

@@ -1,0 +1,232 @@
+appInstallations:
+  jira:
+    appName: Jira
+    appVersion: 0.1.0
+  spacelift:
+    appName: Spacelift
+    appVersion: 0.2.0
+blocks:
+  - name: Issue Updated
+    type:
+      appBlock:
+        block: issueUpdated
+        appInstallation: jira
+        schema: '{"order":15,"name":"Issue Updated","category":"Webhooks","description":"Triggered when a Jira issue is updated via webhook","config":{},"hasOnInternalMessage":true,"inputs":{},"outputs":{"default":{"order":0,"name":"Issue Updated Event","description":"Processed issue update event data","default":true,"possiblePrimaryParents":["default"],"type":{"properties":{"changes":{"description":"List of changes made to the issue","items":{"properties":{"field":{"description":"Field that was changed","type":"string"},"fieldtype":{"description":"Type of field","type":"string"},"from":{"description":"Previous value","type":"string"},"to":{"description":"New value","type":"string"}},"required":["field"],"type":"object"},"type":"array"},"issue":{"description":"Structured issue data","properties":{"assignee":{"description":"Assignee display name","type":"string"},"id":{"description":"Issue ID","type":"string"},"issueType":{"description":"Issue type","type":"string"},"key":{"description":"Issue key (e.g., PROJ-123)","type":"string"},"priority":{"description":"Priority level","type":"string"},"project":{"description":"Project key","type":"string"},"status":{"description":"Current status","type":"string"},"summary":{"description":"Issue summary","type":"string"},"updated":{"description":"Last updated timestamp","type":"string"}},"required":["id","key"],"type":"object"},"timestamp":{"description":"When the event was processed","type":"string"},"updatedBy":{"description":"User who made the update","properties":{"accountId":{"description":"User account ID","type":"string"},"displayName":{"description":"User display name","type":"string"},"emailAddress":{"description":"User email","type":"string"}},"type":"object"}},"required":["issue","changes","timestamp"],"type":"object"}}},"signals":{},"hasOnSync":false,"hasOnDrain":false,"hasOnTimer":false}'
+        # The above schema can be used if you attempt to create this block without a valid app installation referenced.
+    position: [1214, 240]
+  - name: Continue on Approval
+    type:
+      coreBlock: condition
+    position: [1214, 855]
+    inputs:
+      default:
+        links:
+          - block: Ensure ID's Match
+            output: then
+        config:
+          condition: !expr |-
+            outputs.issueUpdated.changes.some(change => change.field === "status" && change.to === `${secrets.JIRA_APPROVED_STATUS}`)
+    outputs:
+      then:
+        outputCustomization: !expr outputs.getIssue.fields
+  - name: Get Issue
+    type:
+      appBlock:
+        block: getIssue
+        appInstallation: jira
+        schema: '{"order":1,"name":"Get Issue","category":"Issues","description":"Retrieve a Jira issue by ID or key with optional field filtering and expansion","config":{},"hasOnInternalMessage":false,"inputs":{"default":{"order":0,"config":{"expand":{"order":2,"name":"Expand Options","description":"Array of entities to expand (e.g., [''names'', ''renderedFields'', ''changelog'', ''transitions''])","type":{"items":{"type":{"type":"string"}},"type":"array"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false},"fields":{"order":1,"name":"Fields to Include","description":"Array of fields to include (e.g., [''summary'', ''status'', ''assignee'']). If empty, returns all fields.","type":{"items":{"type":{"type":"string"}},"type":"array"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false},"issueIdOrKey":{"order":0,"name":"Issue ID or Key","description":"The ID or key of the issue to retrieve (e.g., ''PROJ-123'' or ''10001'')","type":{"type":"string"},"fixed":false,"required":true,"hasValidator":false,"fieldKey":"","sensitive":false}},"hasOnEvent":true}},"outputs":{"default":{"order":0,"name":"Issue Details","description":"The retrieved issue with requested fields and expanded data","default":true,"possiblePrimaryParents":["default"],"type":{"properties":{"changelog":{"description":"Issue change history (when expand=changelog)","type":"object"},"editmeta":{"description":"Edit metadata (when expand=editmeta)","type":"object"},"expand":{"description":"The expand parameter used in the request","type":"string"},"fields":{"description":"The issue fields (structure depends on ''fields'' parameter)","type":"object"},"id":{"description":"The issue ID","type":"string"},"issueUrl":{"description":"The API URL for this issue","type":"string"},"key":{"description":"The issue key (e.g., PROJ-123)","type":"string"},"names":{"description":"Translated field names (when expand=names)","type":"object"},"operations":{"description":"Available operations (when expand=operations)","type":"object"},"renderedFields":{"description":"HTML-rendered field values (when expand=renderedFields)","type":"object"},"transitions":{"description":"Available transitions (when expand=transitions)","items":{"type":"object"},"type":"array"}},"required":["id","key","issueUrl","fields"],"type":"object"}}},"signals":{},"hasOnSync":false,"hasOnDrain":false,"hasOnTimer":false}'
+        # The above schema can be used if you attempt to create this block without a valid app installation referenced.
+    position: [1214, 396]
+    inputs:
+      default:
+        links:
+          - block: Issue Updated
+            output: default
+        config:
+          issueIdOrKey: !expr previous.issue.id
+  - name: Decode JWT
+    type:
+      coreBlock: transform
+    position: [1214, 544]
+    inputs:
+      default:
+        links:
+          - block: Get Issue
+            output: default
+        config: {}
+    outputs:
+      default:
+        outputCustomization: !expr |2-
+           (async function() {
+              const jwt = outputs.getIssue.fields[`${secrets.JIRA_CUSTOM_FIELD_ID}`];
+
+              // Split JWT
+              const [headerB64, payloadB64, signatureB64] = jwt.split('.');
+              if (!headerB64 || !payloadB64 || !signatureB64) {
+                throw new Error('Invalid JWT format');
+              }
+
+              // Prepare message to verify
+              const message = new TextEncoder().encode(`${headerB64}.${payloadB64}`);
+
+              // Import HMAC key
+              const secretKey = new TextEncoder().encode(secrets.JWT_SECRET);
+              const key = await crypto.subtle.importKey(
+                'raw',
+                secretKey,
+                { name: 'HMAC', hash: 'SHA-256' },
+                false,
+                ['verify']
+              );
+
+              // Decode signature from base64url
+              const base64 = signatureB64.replace(/-/g, '+').replace(/_/g, '/');
+              const padded = base64.padEnd(base64.length + (4 - base64.length % 4) % 4, '=');
+              const sigBytes = Uint8Array.from(atob(padded), c => c.charCodeAt(0));
+
+              // Verify signature
+              const isValid = await crypto.subtle.verify('HMAC', key, sigBytes, message);
+
+              if (!isValid) {
+                throw new Error('JWT signature verification failed');
+              }
+
+              // Decode payload
+              const payloadPadded = payloadB64.replace(/-/g, '+').replace(/_/g, '/');
+              const payloadWithPad = payloadPadded.padEnd(
+                payloadPadded.length + (4 - payloadPadded.length % 4) % 4, '='
+              );
+              const payload = JSON.parse(atob(payloadWithPad));
+
+              return {
+                stackId: payload.stack_id,
+                runId: payload.run_id,
+                issueId: payload.issue_id
+              };
+            })()
+  - name: Approve run
+    type:
+      appBlock:
+        block: approveRun
+        appInstallation: spacelift
+        schema: '{"order":23,"name":"Approve run","category":"Runs","description":"Approve a run that requires approval","config":{},"hasOnInternalMessage":false,"inputs":{"default":{"order":0,"config":{"note":{"order":2,"name":"Note","description":"Optional note for the approval","type":{"type":"string"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false},"runId":{"order":1,"name":"Run ID","description":"The ID of the run to approve","type":{"type":"string"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false},"stackId":{"order":0,"name":"Stack ID","description":"The ID of the stack containing the run","type":{"type":"string"},"fixed":false,"required":true,"hasValidator":false,"fieldKey":"","sensitive":false}},"hasOnEvent":true}},"outputs":{"default":{"order":0,"default":true,"possiblePrimaryParents":["default"],"type":{"properties":{"author":{"type":"string"},"decision":{"type":"string"},"note":{"type":"string"},"reviewId":{"type":"string"},"timestamp":{"type":"number"}},"required":["reviewId","decision","timestamp","author"],"type":"object"}}},"signals":{},"hasOnSync":false,"hasOnDrain":false,"hasOnTimer":false}'
+        # The above schema can be used if you attempt to create this block without a valid app installation referenced.
+    position: [1214, 992]
+    inputs:
+      default:
+        links:
+          - block: Continue on Approval
+            output: then
+        config:
+          note: Approved in Jira
+          runId: !expr outputs.decodeJwt.runId
+          stackId: !expr outputs.decodeJwt.stackId
+  - name: Add Comment
+    type:
+      appBlock:
+        block: addComment
+        appInstallation: jira
+        schema: '{"order":5,"name":"Add Comment","category":"Issues","description":"Add a comment to a Jira issue","config":{},"hasOnInternalMessage":false,"inputs":{"default":{"order":0,"config":{"comment":{"order":1,"name":"Comment Text","description":"The comment text to add to the issue","type":{"type":"string"},"fixed":false,"required":true,"hasValidator":false,"fieldKey":"","sensitive":false},"issueIdOrKey":{"order":0,"name":"Issue ID or Key","description":"The ID or key of the issue to comment on (e.g., ''PROJ-123'' or ''10001'')","type":{"type":"string"},"fixed":false,"required":true,"hasValidator":false,"fieldKey":"","sensitive":false},"visibility":{"order":2,"name":"Visibility","description":"Comment visibility restriction (e.g., ''Developers'', ''Administrators''). Leave empty for public comment.","type":{"type":"string"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false}},"hasOnEvent":true}},"outputs":{"default":{"order":0,"name":"Comment Result","description":"Details of the added comment","default":true,"possiblePrimaryParents":["default"],"type":{"properties":{"commentId":{"description":"The ID of the created comment","type":"string"},"commentUrl":{"description":"The API URL for this comment","type":"string"},"created":{"description":"When the comment was created (ISO timestamp)","type":"string"}},"required":["commentId","created","commentUrl"],"type":"object"}}},"signals":{},"hasOnSync":false,"hasOnDrain":false,"hasOnTimer":false}'
+        # The above schema can be used if you attempt to create this block without a valid app installation referenced.
+    position: [1214, 1254]
+    inputs:
+      default:
+        links:
+          - block: Confirm run
+            output: default
+        config:
+          comment: Approved In Spacelift
+          issueIdOrKey: !expr outputs.getIssue.id
+  - name: Confirm run
+    type:
+      appBlock:
+        block: confirmRun
+        appInstallation: spacelift
+        schema: '{"order":25,"name":"Confirm run","category":"Runs","description":"Confirm a run that is waiting for confirmation","config":{},"hasOnInternalMessage":false,"inputs":{"default":{"order":0,"config":{"note":{"order":2,"name":"Note","description":"Optional note for the confirmation","type":{"type":"string"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false},"runId":{"order":1,"name":"Run ID","description":"The ID of the run to confirm (optional, defaults to current blocking run)","type":{"type":"string"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false},"stackId":{"order":0,"name":"Stack ID","description":"The ID of the stack containing the run","type":{"type":"string"},"fixed":false,"required":true,"hasValidator":false,"fieldKey":"","sensitive":false}},"hasOnEvent":true}},"outputs":{"default":{"order":0,"default":true,"possiblePrimaryParents":["default"],"type":{"properties":{"createdAt":{"type":"number"},"runId":{"type":"string"},"state":{"type":"string"},"title":{"type":"string"},"updatedAt":{"type":"number"}},"required":["runId","state","title","createdAt","updatedAt"],"type":"object"}}},"signals":{},"hasOnSync":false,"hasOnDrain":false,"hasOnTimer":false}'
+        # The above schema can be used if you attempt to create this block without a valid app installation referenced.
+    position: [1214, 1125]
+    inputs:
+      default:
+        links:
+          - block: Approve run
+            output: default
+        config:
+          note: Approved in Jira
+          runId: !expr outputs.decodeJwt.runId
+          stackId: !expr outputs.decodeJwt.stackId
+  - name: Ensure ID's Match
+    type:
+      coreBlock: condition
+    position: [1214, 700]
+    inputs:
+      default:
+        links:
+          - block: Decode JWT
+            output: default
+        config:
+          condition: !expr previous.issueId == outputs.getIssue.id
+  - name: Reject run
+    type:
+      appBlock:
+        block: rejectRun
+        appInstallation: spacelift
+        schema: '{"order":24,"name":"Reject run","category":"Runs","description":"Reject a run that requires approval","config":{},"hasOnInternalMessage":false,"inputs":{"default":{"order":0,"config":{"note":{"order":2,"name":"Note","description":"Optional note for the rejection","type":{"type":"string"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false},"runId":{"order":1,"name":"Run ID","description":"The ID of the run to reject","type":{"type":"string"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false},"stackId":{"order":0,"name":"Stack ID","description":"The ID of the stack containing the run","type":{"type":"string"},"fixed":false,"required":true,"hasValidator":false,"fieldKey":"","sensitive":false}},"hasOnEvent":true}},"outputs":{"default":{"order":0,"default":true,"possiblePrimaryParents":["default"],"type":{"properties":{"author":{"type":"string"},"decision":{"type":"string"},"note":{"type":"string"},"reviewId":{"type":"string"},"timestamp":{"type":"number"}},"required":["reviewId","decision","timestamp","author"],"type":"object"}}},"signals":{},"hasOnSync":false,"hasOnDrain":false,"hasOnTimer":false}'
+        # The above schema can be used if you attempt to create this block without a valid app installation referenced.
+    position: [1605, 997]
+    inputs:
+      default:
+        links:
+          - block: Continue on Denial
+            output: then
+        config:
+          note: Denied in Jira
+          runId: !expr outputs.decodeJwt.runId
+          stackId: !expr outputs.decodeJwt.stackId
+  - name: Discard run
+    type:
+      appBlock:
+        block: discardRun
+        appInstallation: spacelift
+        schema: '{"order":29,"name":"Discard run","category":"Runs","description":"Discard a run that''s waiting to be applied","config":{},"hasOnInternalMessage":false,"inputs":{"default":{"order":0,"config":{"note":{"order":2,"name":"Note","description":"Optional note for the discard action","type":{"type":"string"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false},"runId":{"order":1,"name":"Run ID","description":"The ID of the run to discard (optional, defaults to current blocking run)","type":{"type":"string"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false},"stackId":{"order":0,"name":"Stack ID","description":"The ID of the stack containing the run","type":{"type":"string"},"fixed":false,"required":true,"hasValidator":false,"fieldKey":"","sensitive":false}},"hasOnEvent":true}},"outputs":{"default":{"order":0,"default":true,"possiblePrimaryParents":["default"],"type":{"properties":{"createdAt":{"type":"number"},"runId":{"type":"string"},"state":{"type":"string"},"title":{"type":"string"},"updatedAt":{"type":"number"}},"required":["runId","state","title","createdAt","updatedAt"],"type":"object"}}},"signals":{},"hasOnSync":false,"hasOnDrain":false,"hasOnTimer":false}'
+        # The above schema can be used if you attempt to create this block without a valid app installation referenced.
+    position: [1605, 1125]
+    inputs:
+      default:
+        links:
+          - block: Reject run
+            output: default
+        config:
+          note: Denied in Jira
+          runId: !expr outputs.decodeJwt.runId
+          stackId: !expr outputs.decodeJwt.stackId
+  - name: Add Comment Denied
+    type:
+      appBlock:
+        block: addComment
+        appInstallation: jira
+        schema: '{"order":5,"name":"Add Comment","category":"Issues","description":"Add a comment to a Jira issue","config":{},"hasOnInternalMessage":false,"inputs":{"default":{"order":0,"config":{"comment":{"order":1,"name":"Comment Text","description":"The comment text to add to the issue","type":{"type":"string"},"fixed":false,"required":true,"hasValidator":false,"fieldKey":"","sensitive":false},"issueIdOrKey":{"order":0,"name":"Issue ID or Key","description":"The ID or key of the issue to comment on (e.g., ''PROJ-123'' or ''10001'')","type":{"type":"string"},"fixed":false,"required":true,"hasValidator":false,"fieldKey":"","sensitive":false},"visibility":{"order":2,"name":"Visibility","description":"Comment visibility restriction (e.g., ''Developers'', ''Administrators''). Leave empty for public comment.","type":{"type":"string"},"fixed":false,"required":false,"hasValidator":false,"fieldKey":"","sensitive":false}},"hasOnEvent":true}},"outputs":{"default":{"order":0,"name":"Comment Result","description":"Details of the added comment","default":true,"possiblePrimaryParents":["default"],"type":{"properties":{"commentId":{"description":"The ID of the created comment","type":"string"},"commentUrl":{"description":"The API URL for this comment","type":"string"},"created":{"description":"When the comment was created (ISO timestamp)","type":"string"}},"required":["commentId","created","commentUrl"],"type":"object"}}},"signals":{},"hasOnSync":false,"hasOnDrain":false,"hasOnTimer":false}'
+        # The above schema can be used if you attempt to create this block without a valid app installation referenced.
+    position: [1605, 1254]
+    inputs:
+      default:
+        links:
+          - block: Discard run
+            output: default
+        config:
+          comment: Denied In Spacelift
+          issueIdOrKey: !expr outputs.getIssue.id
+  - name: Continue on Denial
+    type:
+      coreBlock: condition
+    position: [1605, 855]
+    inputs:
+      default:
+        links:
+          - block: Continue on Approval
+            output: else
+        config:
+          condition: !expr |-
+            outputs.issueUpdated.changes.some(change => change.field === "status" && change.to === `${secrets.JIRA_DENIED_STATUS}`)
+    outputs:
+      then:
+        outputCustomization: !expr outputs.getIssue.fields
