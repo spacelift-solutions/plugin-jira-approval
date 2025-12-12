@@ -126,7 +126,7 @@ Generate an API key for cost estimation:
 
 Create a secret to verify webhook authenticity:
 - Generate a random string (e.g., using `openssl rand -hex 32`)
-- In your Flows project, create a secret called `JIRA_WEBHOOK_SECRET` with this value
+- In your Flows project, create a secret called `JWT_SECRET` with this value
 - Use the same value for `signing_key` in the module config
 
 ### 8. Create approval status secrets
