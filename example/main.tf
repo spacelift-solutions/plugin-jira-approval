@@ -17,6 +17,9 @@ provider "flows" {
   endpoint = "useflows.eu"
 }
 
+# Note to bounty hunters, the below api keys and api key ids and everything are all fake.
+# They are just here so folks can see what they look like, but they are not real. Dont worry :)
+
 module "test" {
   source = "../"
 
