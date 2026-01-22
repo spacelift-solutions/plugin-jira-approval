@@ -57,3 +57,58 @@ variable "flows" {
   })
   description = "Flows configuration."
 }
+
+variable "policies" {
+  type = list(object({
+    name  = string
+    type = string
+    body  = string
+  }))
+  description = "Policies to attach to the plugin."
+  default = [
+    {
+      name = "INFRACOST_APPROVAL"
+      type = "APPROVAL"
+      body = <<EOT
+      package spacelift
+
+approve { input.run.state != "UNCONFIRMED" }
+
+approve {
+  count(input.reviews.current.approvals) > 0
+  count(input.reviews.current.rejections) == 0
+  input.reviews.current.approvals[_].author == "api::$${api_key_id}"
+}
+
+approve {
+    input.run.flags[_] != "infracost:too_costly"
+}
+
+sample := true
+EOT
+    },
+
+    {
+      name = "INFRACOST",
+      type = "PLAN",
+      body = <<EOT
+      package spacelift
+
+# Prevent any changes that will cause the monthly cost to go above a certain threshold
+warn[sprintf("monthly cost greater than $%d ($%d)", [threshold, monthly_cost])] {
+    threshold := $${threshold}
+    monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+    monthly_cost > threshold
+}
+
+flag["infracost:too_costly"]{
+    threshold := $${threshold}
+    monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+    monthly_cost > threshold
+}
+
+sample := true
+EOT
+    }
+  ]
+}

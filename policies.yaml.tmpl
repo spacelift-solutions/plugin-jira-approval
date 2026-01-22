@@ -1,0 +1,7 @@
+policies:
+%{for policy in Policies ~}
+  - name_prefix: ${policy.name}
+    type: ${policy.type}
+    body: |-
+${indent(6, policy.body)}
+%{endfor ~}

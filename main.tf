@@ -12,7 +12,14 @@ terraform {
 }
 
 locals {
-  plugin_manifest = templatefile("${path.module}/plugin.yaml", {
+  manifest = file("${path.module}/plugin.yaml")
+
+  # Append var.policies to the manifest
+  policies =templatefile("${path.module}/policies.yaml.tmpl", {
+    Policies = var.policies
+  })
+
+  plugin_manifest = templatestring("${local.manifest}\n${local.policies}", {
     threshold  = var.infracost.threshold
     api_key_id = var.spacelift_api_key_id
   })
