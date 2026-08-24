@@ -993,6 +993,7 @@ contexts:
               Policy(
                   name_prefix="INFRACOST",
                   type="PLAN",
+                  engine_type="REGO_V0",
                   body="""
       package spacelift
 
@@ -1087,7 +1088,7 @@ policies:
     }
 
     sample := true
-  engine_type: REGO_V1
+  engine_type: REGO_V0
 - name_prefix: INFRAFOST_APPROVAL
   type: APPROVAL
   body: |-

@@ -859,6 +859,7 @@ class JiraPlugin(SpaceforgePlugin):
         Policy(
             name_prefix="INFRACOST",
             type="PLAN",
+            engine_type="REGO_V0",
             body="""
 package spacelift
 
