@@ -268,8 +268,8 @@ contexts:
                   description="Jira Plugin for creating issues after plan",
                   hooks={
                       "after_plan": [
-                          "[ ! -f spacelift.plan.json ] && { if command -v tofu >/dev/null 2>&1; then tofu show -json spacelift.plan > spacelift.plan.json; elif command -v terraform >/dev/null 2>&1; then terraform show -json spacelift.plan > spacelift.plan.json; else echo 'Error: Neither tofu nor terraform found in PATH' >&2; exit 1; fi; }",
-                          "[ ! -f infracost.custom.spacelift.json ] && infracost breakdown --path . --out-file infracost.custom.spacelift.json --format json",
+                          "if [ ! -f spacelift.plan.json ]; then if command -v tofu >/dev/null 2>&1; then tofu show -json spacelift.plan > spacelift.plan.json; elif command -v terraform >/dev/null 2>&1; then terraform show -json spacelift.plan > spacelift.plan.json; else echo ''Error: Neither tofu nor terraform found in PATH'' >&2; exit 1; fi; fi",
+                          "if [ ! -f infracost.custom.spacelift.json ]; then infracost breakdown --path . --out-file infracost.custom.spacelift.json --format json; fi",
                       ]
                   },
                   env=[
@@ -999,13 +999,13 @@ contexts:
       # Prevent any changes that will cause the monthly cost to go above a certain threshold
       warn[sprintf("monthly cost greater than $%d ($%d)", [threshold, monthly_cost])] {
       	threshold := ${threshold}
-      	monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+      	monthly_cost := to_number(${monthly_cost_input})
       	monthly_cost > threshold
       }
 
       flag["infracost:too_costly"]{
       	threshold := ${threshold}
-      	monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+      	monthly_cost := to_number(${monthly_cost_input})
       	monthly_cost > threshold
       }
 
@@ -1062,8 +1062,8 @@ contexts:
     sensitive: false
   hooks:
     after_plan:
-    - 'if [ ! -f spacelift.plan.json ]; then if command -v tofu >/dev/null 2>&1; then tofu show -json spacelift.plan > spacelift.plan.json; elif command -v terraform >/dev/null 2>&1; then terraform show -json spacelift.plan > spacelift.plan.json; else echo ''Error: Neither tofu nor terraform found in PATH'' >&2; exit 1; fi; fi'
-    - 'if [ ! -f infracost.custom.spacelift.json ]; then infracost breakdown --path . --out-file infracost.custom.spacelift.json --format json; fi'
+    - 'if [ ! -f spacelift.plan.json ]; then if command -v tofu >/dev/null 2>&1; then tofu show -json spacelift.plan > spacelift.plan.json; elif command -v terraform >/dev/null 2>&1; then terraform show -json spacelift.plan > spacelift.plan.json; else echo ''''Error: Neither tofu nor terraform found in PATH'''' >&2; exit 1; fi; fi'
+    - if [ ! -f infracost.custom.spacelift.json ]; then infracost breakdown --path . --out-file infracost.custom.spacelift.json --format json; fi
     - chmod +x /mnt/workspace/plugins/jira/after_plan.sh && /mnt/workspace/plugins/jira/after_plan.sh
     before_init:
     - mkdir -p /mnt/workspace/plugins/jira
@@ -1076,17 +1076,18 @@ policies:
     # Prevent any changes that will cause the monthly cost to go above a certain threshold
     warn[sprintf("monthly cost greater than $%d ($%d)", [threshold, monthly_cost])] {
     	threshold := ${threshold}
-    	monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+    	monthly_cost := to_number(${monthly_cost_input})
     	monthly_cost > threshold
     }
 
     flag["infracost:too_costly"]{
     	threshold := ${threshold}
-    	monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+    	monthly_cost := to_number(${monthly_cost_input})
     	monthly_cost > threshold
     }
 
     sample := true
+  engine_type: REGO_V1
 - name_prefix: INFRAFOST_APPROVAL
   type: APPROVAL
   body: |-
@@ -1105,3 +1106,4 @@ policies:
     }
 
     sample := true
+  engine_type: REGO_V1
