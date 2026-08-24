@@ -1062,8 +1062,8 @@ contexts:
     sensitive: false
   hooks:
     after_plan:
-    - '[ ! -f spacelift.plan.json ] && { if command -v tofu >/dev/null 2>&1; then tofu show -json spacelift.plan > spacelift.plan.json; elif command -v terraform >/dev/null 2>&1; then terraform show -json spacelift.plan > spacelift.plan.json; else echo ''Error: Neither tofu nor terraform found in PATH'' >&2; exit 1; fi; }'
-    - '[ ! -f infracost.custom.spacelift.json ] && infracost breakdown --path . --out-file infracost.custom.spacelift.json --format json'
+    - 'if [ ! -f spacelift.plan.json ]; then if command -v tofu >/dev/null 2>&1; then tofu show -json spacelift.plan > spacelift.plan.json; elif command -v terraform >/dev/null 2>&1; then terraform show -json spacelift.plan > spacelift.plan.json; else echo ''Error: Neither tofu nor terraform found in PATH'' >&2; exit 1; fi; fi'
+    - 'if [ ! -f infracost.custom.spacelift.json ]; then infracost breakdown --path . --out-file infracost.custom.spacelift.json --format json; fi'
     - chmod +x /mnt/workspace/plugins/jira/after_plan.sh && /mnt/workspace/plugins/jira/after_plan.sh
     before_init:
     - mkdir -p /mnt/workspace/plugins/jira
