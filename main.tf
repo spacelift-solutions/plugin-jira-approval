@@ -2,11 +2,11 @@ terraform {
   required_providers {
     spacelift = {
       source  = "spacelift-io/spacelift"
-      version = "1.40.0"
+      version = ">= 1.40.0"
     }
     flows = {
       source  = "spacelift-io/flows"
-      version = "0.2.0"
+      version = ">= 0.2.0"
     }
   }
 }
