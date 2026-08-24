@@ -882,6 +882,7 @@ sample := true
         Policy(
             name_prefix="INFRAFOST_APPROVAL",
             type="APPROVAL",
+            engine_type="REGO_V0",
             body="""
 package spacelift
 
