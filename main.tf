@@ -13,8 +13,9 @@ terraform {
 
 locals {
   plugin_manifest = templatefile("${path.module}/plugin.yaml", {
-    threshold  = var.infracost.threshold
-    api_key_id = var.spacelift_api_key_id
+    threshold          = var.infracost.threshold
+    api_key_id         = var.spacelift_api_key_id
+    monthly_cost_input = var.monthly_cost_input
   })
 }
 

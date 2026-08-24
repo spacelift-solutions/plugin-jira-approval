@@ -134,8 +134,8 @@ class JiraPlugin(SpaceforgePlugin):
             description="Jira Plugin for creating issues after plan",
             hooks={
                 "after_plan": [
-                    "[ ! -f spacelift.plan.json ] && { if command -v tofu >/dev/null 2>&1; then tofu show -json spacelift.plan > spacelift.plan.json; elif command -v terraform >/dev/null 2>&1; then terraform show -json spacelift.plan > spacelift.plan.json; else echo 'Error: Neither tofu nor terraform found in PATH' >&2; exit 1; fi; }",
-                    "[ ! -f infracost.custom.spacelift.json ] && infracost breakdown --path . --out-file infracost.custom.spacelift.json --format json",
+                    "if [ ! -f spacelift.plan.json ]; then if command -v tofu >/dev/null 2>&1; then tofu show -json spacelift.plan > spacelift.plan.json; elif command -v terraform >/dev/null 2>&1; then terraform show -json spacelift.plan > spacelift.plan.json; else echo ''Error: Neither tofu nor terraform found in PATH'' >&2; exit 1; fi; fi",
+                    "if [ ! -f infracost.custom.spacelift.json ]; then infracost breakdown --path . --out-file infracost.custom.spacelift.json --format json; fi",
                 ]
             },
             env=[
@@ -865,13 +865,13 @@ package spacelift
 # Prevent any changes that will cause the monthly cost to go above a certain threshold
 warn[sprintf("monthly cost greater than $%d ($%d)", [threshold, monthly_cost])] {
 	threshold := ${threshold}
-	monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+	monthly_cost := to_number(${monthly_cost_input})
 	monthly_cost > threshold
 }
 
 flag["infracost:too_costly"]{
 	threshold := ${threshold}
-	monthly_cost := to_number(input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost)
+	monthly_cost := to_number(${monthly_cost_input})
 	monthly_cost > threshold
 }
 

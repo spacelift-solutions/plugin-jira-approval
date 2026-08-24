@@ -57,3 +57,9 @@ variable "flows" {
   })
   description = "Flows configuration."
 }
+
+variable "monthly_cost_input" {
+  type        = string
+  default     = "input.third_party_metadata.custom.infracost.projects[0].diff.totalMonthlyCost"
+  description = "The key to use in the policy that determines total monthly cost."
+}
